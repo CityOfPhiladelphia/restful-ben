@@ -1,14 +1,22 @@
 from functools import wraps
 import binascii
 import os
+import uuid
+import json
+from datetime import datetime, timedelta
 
-from sqlalchemy import Column, String
+from sqlalchemy import Column, String, Integer, BigInteger, DateTime, ForeignKey, func
+from sqlalchemy.dialects.postgresql import INET, UUID
+from sqlalchemy.ext.declarative import declared_attr
 from flask import request
+from flask.sessions import SessionInterface
 from flask_restful import Resource, abort
 from passlib.hash import argon2
 from marshmallow import Schema, fields
-from flask_login import login_user, logout_user, login_required, current_user
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from itsdangerous import URLSafeSerializer
+from cryptography.fernet import Fernet
+import dateutil.parser
 
 def authorization(roles_permissions):
     def authorization_decorator(func):
@@ -83,7 +91,59 @@ class SessionSchema(Schema):
 
 session_schema = SessionSchema()
 
+def get_ip(number_of_proxies):
+    if 'X-Forwarded-For' in request.headers:
+        path = request.headers.getlist("X-Forwarded-For")[0].rpartition(' ')
+        if len(path) != number_of_proxies:
+            abort(401)
+        return path[-1]
+    if number_of_proxies > 0:
+        abort(401)
+    return request.remote_addr
+
 class SessionResource(Resource):
+    token_model = None
+    cookie_name = 'session'
+    cookie_domain = None
+    cookie_path = None
+    secure_cookie = False
+    session_timeout = timedelta(hours=12)
+    number_of_proxies = 0
+
+    def get_cookie(self, token, expires_at):
+        domain = ''
+        if self.cookie_domain:
+            domain = 'Domain={}; '.format(self.domain)
+
+        path = ''
+        if self.cookie_path:
+            path = 'Path={}; '.format(self.path)
+
+        secure = ''
+        if self.secure_cookie:
+            secure = 'Secure; '
+
+        return '{}={}; Expires={}; {}{}{}HttpOnly'.format(
+            self.cookie_name,
+            token,
+            expires_at,
+            domain,
+            path,
+            secure)
+
+    def session_cookie(self, user):
+        token = self.token_model(
+            user_id=user.id,
+            expires_at=datetime.utcnow() + self.session_timeout,
+            ip=get_ip(self.number_of_proxies),
+            user_agent=request.user_agent.string)
+        self.session.add(token)
+        self.session.commit()
+
+        expires_at = token.expires_at.strftime('%a, %d %b %Y %H:%M:%S GMT')
+
+        return self.get_cookie(token.token, expires_at)
+
     def post(self):
         raw_body = request.json
         session_load = session_schema.load(raw_body or {})
@@ -104,16 +164,172 @@ class SessionResource(Resource):
         if not password_matches:
             abort(401, errors=['Not Authorized'])
 
-        login_user(user)
+        cookie = self.session_cookie(user)
 
         response_body = {'csrf_token': self.csrf.generate_token()}
-        return response_body, 201
+
+        return response_body, 201, {'Set-Cookie': cookie}
 
     @login_required
     def get(self):
         return None, 204
 
+    @login_required
     def delete(self):
-        logout_user()
+        token = current_user.token
+        token.revoked_at = datetime.utcnow()
+        self.session.commit()
 
-        return None, 204
+        cookie = self.get_cookie('deleted', 'Thu, 01 Jan 1970 00:00:00 GMT')
+
+        return None, 204, {'Set-Cookie': cookie}
+
+## Tokens
+
+class TokenMixin(object):
+    """
+    Mix with a model base class
+    """
+
+    __tablename__ = 'tokens'
+
+    # instance of cryptography.fernet.Fernet
+    fernet = None
+
+    ## TODO: OAuth fields?
+    ## oauth_client
+    ## refresh_token_id
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ## type - session, token, refresh_token
+    @declared_attr
+    def user_id(cls):
+        return Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    revoked_at = Column(DateTime, index=True)
+    ip = Column(INET, nullable=False)
+    user_agent = Column(String)
+    created_at = Column(DateTime,
+                        nullable=False,
+                        server_default=func.now())
+    updated_at = Column(DateTime,
+                        nullable=False,
+                        server_default=func.now(),
+                        onupdate=func.now())
+
+    @property
+    def token(self):
+        return self.fernet.encrypt(json.dumps({
+            'id': str(self.id),
+            'user_id': self.user_id,
+            'expires_at': self.expires_at.isoformat()
+        }).encode('utf-8')).decode('utf-8')
+
+    @classmethod
+    def verify_token(cls, session, input_token):
+        try:
+            data = json.loads(cls.fernet.decrypt(input_token.encode('utf-8')).decode('utf-8'))
+            expires_at = dateutil.parser.parse(data['expires_at'])
+        except:
+            return None
+
+        if expires_at <= datetime.utcnow():
+            return None
+
+        token = session.query(cls) \
+            .filter(cls.id == data['id'],
+                    cls.user_id == data['user_id'],
+                    cls.revoked_at == None,
+                    cls.expires_at > func.now()) \
+            .one_or_none()
+
+        if token:
+            return token
+
+        return None
+
+## TODO: make this more abstract? allow for remote token and users? eg auth service client. maybe two classes
+
+class Auth(object):
+    def __init__(self,
+                 app=None,
+                 session=None,
+                 csrf=None,
+                 base_model=None,
+                 user_model=None,
+                 token_model=None,
+                 fernet_key=None,
+                 session_resource=None,
+                 cookie_name='session',
+                 cookie_domain=None,
+                 cookie_path=None,
+                 secure_cookie=False,
+                 session_timeout=timedelta(hours=12),
+                 number_of_proxies=0):
+
+        self.user_model = user_model
+        self.session = session
+        self.csrf = csrf
+
+        self.cookie_name = cookie_name
+
+        self.login_manager = LoginManager()
+        self.login_manager.request_loader(self.load_user_from_request)
+
+        if app:
+            self.init_app(app)
+
+        base_model.__dict__
+
+        if base_model and not token_model:
+            if not fernet_key:
+                raise Exception('`fernet_key` required if `token_model` is not passed')
+
+            Token = type('Token', (TokenMixin, base_model,), {
+                'fernet': Fernet(fernet_key)
+            })
+
+            self.token_model = Token
+        else:
+            self.token_model = token_model
+
+        if session_resource:
+            self.session_resource = session_resource
+        else:
+            LocalSessionResource = type('LocalSessionResource', (SessionResource,), {
+                'User': self.user_model,
+                'token_model': self.token_model,
+                'session': self.session,
+                'csrf': self.csrf,
+                'cookie_name': self.cookie_name,
+                'cookie_domain': cookie_domain,
+                'cookie_path': cookie_path,
+                'secure_cookie': secure_cookie,
+                'session_timeout': session_timeout,
+                'number_of_proxies': number_of_proxies
+            })
+
+            self.session_resource = LocalSessionResource
+
+    def init_app(self, app):
+        self.login_manager.init_app(app)
+
+    def load_user_from_request(self, request):
+        token = None
+
+        authorization_header = request.headers.get('Authorization')
+        if authorization_header:
+            token = authorization_header.replace('Bearer ', '', 1)
+        elif self.cookie_name in request.cookies:
+            token = request.cookies[self.cookie_name]
+
+        token = self.token_model.verify_token(self.session, token)
+
+        if token == None:
+            return None
+
+        user = self.session.query(self.user_model).get(token.user_id)
+
+        setattr(user, 'token', token)
+
+        return user

@@ -5,6 +5,9 @@ def test_login(app):
     test_client = app.test_client()
 
     response = json_call(test_client.post, '/session', username='amadonna', password='foo')
+    print(response.headers)
+    ## TODO: !!! inspect cookie
+    ## TODO: inspect test_client cookie jar?
     assert response.status_code == 201
     assert 'csrf_token' in response.json
     assert len(response.json['csrf_token']) > 64
@@ -24,6 +27,9 @@ def test_logout(app):
     assert response.status_code == 204
 
     response = test_client.delete('/session')
+    print(response.headers)
+    ## TODO: inspect cookie in response
+    ## TODO: assert token revoked_at
     assert response.status_code == 204
 
     response = test_client.get('/session')
