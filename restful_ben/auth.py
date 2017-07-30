@@ -5,16 +5,14 @@ import uuid
 import json
 from datetime import datetime, timedelta
 
-from sqlalchemy import Column, String, Integer, BigInteger, DateTime, ForeignKey, func
+from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, func
 from sqlalchemy.dialects.postgresql import INET, UUID
 from sqlalchemy.ext.declarative import declared_attr
-from flask import request
-from flask.sessions import SessionInterface
+from flask import request, current_app
 from flask_restful import Resource, abort
 from passlib.hash import argon2
 from marshmallow import Schema, fields
-from flask_login import LoginManager, login_user, logout_user, login_required, current_user
-from itsdangerous import URLSafeSerializer
+from flask_login import LoginManager, login_required, current_user
 from cryptography.fernet import Fernet
 import dateutil.parser
 
@@ -35,31 +33,95 @@ def authorization(roles_permissions):
         return wrapper
     return authorization_decorator
 
-class CSRF(object):
-    header = 'X-CSRF'
+def csrf_check(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if request.method in ['GET','HEAD','OPTIONS'] or \
+            (hasattr(current_user, 'is_api') and current_user.is_api):
+            return func(*args, **kwargs)
 
-    def __init__(self, csrf_secret=None):
+        ## check for X-CSRF header and check signature
+        try:
+            csrf = current_app.csrf
+            csrf.fernet.decrypt(request.headers[csrf.header].encode('utf-8'))
+        except:
+            abort(401)
+
+        return func(*args, **kwargs)
+    return wrapper
+
+class CSRF(object):
+    def __init__(self, csrf_secret=None, csrf_header=None):
         csrf_secret = csrf_secret or os.getenv('CSRF_SECRET', None)
-        self.csrf_signer = URLSafeSerializer(csrf_secret)
+        if csrf_secret == None:
+            raise Exception('`csrf_secret` required')
+        self.fernet = Fernet(csrf_secret)
+        self.header = csrf_header or 'X-CSRF'
 
     def generate_token(self):
-        return self.csrf_signer.dumps(binascii.hexlify(os.urandom(32)).decode('utf-8'))
+        return self.fernet.encrypt(os.urandom(32)).decode('utf-8')
 
-    def csrf_check(self, func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            if request.method in ['GET','HEAD','OPTIONS'] or \
-                (hasattr(current_user, 'is_api') and current_user.is_api):
-                return func(*args, **kwargs)
+class TokenMixin(object):
+    """
+    Mix with a model base class
+    """
 
-            ## check for X-CSRF header and check signature
-            try:
-                self.csrf_signer.loads(request.headers[self.header])
-            except:
-                abort(401)
+    __tablename__ = 'tokens'
 
-            return func(*args, **kwargs)
-        return wrapper
+    # instance of cryptography.fernet.Fernet
+    fernet = None
+
+    ## TODO: OAuth fields?
+    ## oauth_client
+    ## refresh_token_id
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ## type - session, token, refresh_token
+    @declared_attr
+    def user_id(cls):
+        return Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    revoked_at = Column(DateTime, index=True)
+    ip = Column(INET, nullable=False)
+    user_agent = Column(String)
+    created_at = Column(DateTime,
+                        nullable=False,
+                        server_default=func.now())
+    updated_at = Column(DateTime,
+                        nullable=False,
+                        server_default=func.now(),
+                        onupdate=func.now())
+
+    @property
+    def token(self):
+        return self.fernet.encrypt(json.dumps({
+            'id': str(self.id),
+            'user_id': self.user_id,
+            'expires_at': self.expires_at.isoformat()
+        }).encode('utf-8')).decode('utf-8')
+
+    @classmethod
+    def verify_token(cls, session, input_token):
+        try:
+            data = json.loads(cls.fernet.decrypt(input_token.encode('utf-8')).decode('utf-8'))
+            expires_at = dateutil.parser.parse(data['expires_at'])
+        except:
+            return None
+
+        if expires_at <= datetime.utcnow():
+            return None
+
+        token = session.query(cls) \
+            .filter(cls.id == data['id'],
+                    cls.user_id == data['user_id'],
+                    cls.revoked_at == None,
+                    cls.expires_at > func.now()) \
+            .one_or_none()
+
+        if token:
+            return token
+
+        return None
 
 class UserAuthMixin(object):
     username = Column(String, unique=True, nullable=False)
@@ -184,81 +246,18 @@ class SessionResource(Resource):
 
         return None, 204, {'Set-Cookie': cookie}
 
-## Tokens
-
-class TokenMixin(object):
-    """
-    Mix with a model base class
-    """
-
-    __tablename__ = 'tokens'
-
-    # instance of cryptography.fernet.Fernet
-    fernet = None
-
-    ## TODO: OAuth fields?
-    ## oauth_client
-    ## refresh_token_id
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    ## type - session, token, refresh_token
-    @declared_attr
-    def user_id(cls):
-        return Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
-    expires_at = Column(DateTime, nullable=False, index=True)
-    revoked_at = Column(DateTime, index=True)
-    ip = Column(INET, nullable=False)
-    user_agent = Column(String)
-    created_at = Column(DateTime,
-                        nullable=False,
-                        server_default=func.now())
-    updated_at = Column(DateTime,
-                        nullable=False,
-                        server_default=func.now(),
-                        onupdate=func.now())
-
-    @property
-    def token(self):
-        return self.fernet.encrypt(json.dumps({
-            'id': str(self.id),
-            'user_id': self.user_id,
-            'expires_at': self.expires_at.isoformat()
-        }).encode('utf-8')).decode('utf-8')
-
-    @classmethod
-    def verify_token(cls, session, input_token):
-        try:
-            data = json.loads(cls.fernet.decrypt(input_token.encode('utf-8')).decode('utf-8'))
-            expires_at = dateutil.parser.parse(data['expires_at'])
-        except:
-            return None
-
-        if expires_at <= datetime.utcnow():
-            return None
-
-        token = session.query(cls) \
-            .filter(cls.id == data['id'],
-                    cls.user_id == data['user_id'],
-                    cls.revoked_at == None,
-                    cls.expires_at > func.now()) \
-            .one_or_none()
-
-        if token:
-            return token
-
-        return None
-
 ## TODO: make this more abstract? allow for remote token and users? eg auth service client. maybe two classes
 
 class Auth(object):
     def __init__(self,
                  app=None,
                  session=None,
-                 csrf=None,
+                 csrf_header=None,
+                 csrf_secret=None,
                  base_model=None,
                  user_model=None,
                  token_model=None,
-                 fernet_key=None,
+                 token_secret=None,
                  session_resource=None,
                  cookie_name='session',
                  cookie_domain=None,
@@ -266,10 +265,8 @@ class Auth(object):
                  secure_cookie=False,
                  session_timeout=timedelta(hours=12),
                  number_of_proxies=0):
-
         self.user_model = user_model
         self.session = session
-        self.csrf = csrf
 
         self.cookie_name = cookie_name
 
@@ -279,14 +276,16 @@ class Auth(object):
         if app:
             self.init_app(app)
 
-        base_model.__dict__
+        self.csrf = CSRF(csrf_secret=csrf_secret, csrf_header=csrf_header)
+        setattr(app, 'csrf', self.csrf)
 
         if base_model and not token_model:
-            if not fernet_key:
-                raise Exception('`fernet_key` required if `token_model` is not passed')
+            token_secret = token_secret or os.getenv('TOKEN_SECRET', None)
+            if not token_secret:
+                raise Exception('`token_secret` required if `token_model` is not passed')
 
             Token = type('Token', (TokenMixin, base_model,), {
-                'fernet': Fernet(fernet_key)
+                'fernet': Fernet(token_secret)
             })
 
             self.token_model = Token
