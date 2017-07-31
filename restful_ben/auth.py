@@ -42,7 +42,7 @@ def csrf_check(func):
 
         ## check for X-CSRF header and check signature
         try:
-            csrf = current_app.csrf
+            csrf = current_app.auth.csrf
             csrf.fernet.decrypt(request.headers[csrf.header].encode('utf-8'))
         except:
             abort(401)
@@ -71,12 +71,10 @@ class TokenMixin(object):
     # instance of cryptography.fernet.Fernet
     fernet = None
 
-    ## TODO: OAuth fields?
-    ## oauth_client
-    ## refresh_token_id
+    ## TODO: scopes?
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    ## type - session, token, refresh_token
+    ## TODO: type ? like session, token, refresh_token
     @declared_attr
     def user_id(cls):
         return Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
@@ -94,6 +92,7 @@ class TokenMixin(object):
 
     @property
     def token(self):
+        ## TODO: include all or part of the id outside the token? security issue?
         return self.fernet.encrypt(json.dumps({
             'id': str(self.id),
             'user_id': self.user_id,
@@ -277,7 +276,6 @@ class Auth(object):
             self.init_app(app)
 
         self.csrf = CSRF(csrf_secret=csrf_secret, csrf_header=csrf_header)
-        setattr(app, 'csrf', self.csrf)
 
         if base_model and not token_model:
             token_secret = token_secret or os.getenv('TOKEN_SECRET', None)
@@ -312,6 +310,7 @@ class Auth(object):
 
     def init_app(self, app):
         self.login_manager.init_app(app)
+        setattr(app, 'auth', self)
 
     def load_user_from_request(self, request):
         token = None
@@ -328,6 +327,9 @@ class Auth(object):
             return None
 
         user = self.session.query(self.user_model).get(token.user_id)
+
+        if user == None:
+            return None
 
         setattr(user, 'token', token)
 
