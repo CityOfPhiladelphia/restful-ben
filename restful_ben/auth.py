@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import Column, String, Integer, DateTime, Enum, ForeignKey, func
 from sqlalchemy.dialects.postgresql import INET, UUID, ARRAY
 from sqlalchemy.ext.declarative import declared_attr
+from sqlalchemy.orm import validates
 from flask import request, current_app
 from flask_restful import Resource, abort
 from passlib.hash import argon2
@@ -103,6 +104,13 @@ class TokenMixin(object):
                         nullable=False,
                         server_default=func.now(),
                         onupdate=func.now())
+
+    @validates('scopes')
+    def validate_scopes(self, key, scopes):
+        if (self.type == 'token' or self.type == 'refresh_token') and \
+           (self.scopes == None or len(self.scopes) == 0):
+           raise Exception('Types `token` and `refresh_token` require `scopes`')
+        return scopes
 
     @property
     def token(self):
