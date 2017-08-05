@@ -1,11 +1,12 @@
 from functools import wraps
 import binascii
 import os
+import re
 import uuid
 import json
 from datetime import datetime, timedelta
 
-from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, func
+from sqlalchemy import Column, String, Integer, DateTime, Enum, ForeignKey, func
 from sqlalchemy.dialects.postgresql import INET, UUID
 from sqlalchemy.ext.declarative import declared_attr
 from flask import request, current_app
@@ -37,13 +38,14 @@ def csrf_check(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         if request.method in ['GET','HEAD','OPTIONS'] or \
-            (hasattr(current_user, 'is_api') and current_user.is_api):
+            (hasattr(current_user, 'token') and current_user.token.type != 'session'):
             return func(*args, **kwargs)
 
         ## check for X-CSRF header and check signature
         try:
             csrf = current_app.auth.csrf
-            csrf.fernet.decrypt(request.headers[csrf.header].encode('utf-8'))
+            csrf_token_id = csrf.fernet.decrypt(request.headers[csrf.header].encode('utf-8')).decode('utf-8')
+            assert csrf_token_id == str(current_user.token.id)
         except:
             abort(401)
 
@@ -58,8 +60,8 @@ class CSRF(object):
         self.fernet = Fernet(csrf_secret)
         self.header = csrf_header or 'X-CSRF'
 
-    def generate_token(self):
-        return self.fernet.encrypt(os.urandom(32)).decode('utf-8')
+    def generate_token(self, token):
+        return self.fernet.encrypt(str(token.id).encode('utf-8')).decode('utf-8')
 
 class TokenMixin(object):
     """
@@ -74,7 +76,7 @@ class TokenMixin(object):
     ## TODO: scopes?
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    ## TODO: type ? like session, token, refresh_token
+    type = Column(Enum('session', 'token', 'refresh_token', name='token_type'), nullable=False)
     @declared_attr
     def user_id(cls):
         return Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
@@ -92,16 +94,18 @@ class TokenMixin(object):
 
     @property
     def token(self):
-        ## TODO: include all or part of the id outside the token? security issue?
-        return self.fernet.encrypt(json.dumps({
+        token_str = self.fernet.encrypt(json.dumps({
             'id': str(self.id),
             'user_id': self.user_id,
             'expires_at': self.expires_at.isoformat()
         }).encode('utf-8')).decode('utf-8')
 
+        return str(self.id)[:8] + ':' + token_str # adding first 8 of ID to help id tokens
+
     @classmethod
-    def verify_token(cls, session, input_token):
+    def verify_token(cls, session, raw_input_token):
         try:
+            input_token = re.compile('^[0-9a-f]{8}:').sub('', raw_input_token, count=1)
             data = json.loads(cls.fernet.decrypt(input_token.encode('utf-8')).decode('utf-8'))
             expires_at = dateutil.parser.parse(data['expires_at'])
         except:
@@ -194,6 +198,7 @@ class SessionResource(Resource):
 
     def session_cookie(self, user):
         token = self.token_model(
+            type='session',
             user_id=user.id,
             expires_at=datetime.utcnow() + self.session_timeout,
             ip=get_ip(self.number_of_proxies),
@@ -203,7 +208,7 @@ class SessionResource(Resource):
 
         expires_at = token.expires_at.strftime('%a, %d %b %Y %H:%M:%S GMT')
 
-        return self.get_cookie(token.token, expires_at)
+        return token, self.get_cookie(token.token, expires_at)
 
     def post(self):
         raw_body = request.json
@@ -225,9 +230,9 @@ class SessionResource(Resource):
         if not password_matches:
             abort(401, errors=['Not Authorized'])
 
-        cookie = self.session_cookie(user)
+        token, cookie = self.session_cookie(user)
 
-        response_body = {'csrf_token': self.csrf.generate_token()}
+        response_body = {'csrf_token': self.csrf.generate_token(token)}
 
         return response_body, 201, {'Set-Cookie': cookie}
 
@@ -246,6 +251,8 @@ class SessionResource(Resource):
         return None, 204, {'Set-Cookie': cookie}
 
 ## TODO: make this more abstract? allow for remote token and users? eg auth service client. maybe two classes
+## AuthStandalone
+## AuthServiceClient
 
 class Auth(object):
     def __init__(self,
