@@ -14,7 +14,7 @@ from cryptography.fernet import Fernet
 
 from restful_ben.auth import (
     UserAuthMixin,
-    Auth,
+    AuthStandalone,
     authorization,
     csrf_check
 )
@@ -180,7 +180,8 @@ def app():
         if hasattr(cls, '__name__') and cls.__name__ == 'Token':
             token_model = cls
 
-    auth = Auth(app=app,
+    auth = AuthStandalone(
+                app=app,
                 session=db.session,
                 base_model=BaseModel,
                 token_model=token_model,

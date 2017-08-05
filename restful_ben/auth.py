@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timedelta
 
 from sqlalchemy import Column, String, Integer, DateTime, Enum, ForeignKey, func
-from sqlalchemy.dialects.postgresql import INET, UUID
+from sqlalchemy.dialects.postgresql import INET, UUID, ARRAY
 from sqlalchemy.ext.declarative import declared_attr
 from flask import request, current_app
 from flask_restful import Resource, abort
@@ -63,6 +63,19 @@ class CSRF(object):
     def generate_token(self, token):
         return self.fernet.encrypt(str(token.id).encode('utf-8')).decode('utf-8')
 
+def verify_token_fernet(fernet, raw_input_token):
+    try:
+        input_token = re.compile('^[0-9a-f]{8}:').sub('', raw_input_token, count=1)
+        data = json.loads(fernet.decrypt(input_token.encode('utf-8')).decode('utf-8'))
+        expires_at = dateutil.parser.parse(data['expires_at'])
+    except:
+        return None
+
+    if expires_at <= datetime.utcnow():
+        return None
+
+    return data
+
 class TokenMixin(object):
     """
     Mix with a model base class
@@ -73,13 +86,12 @@ class TokenMixin(object):
     # instance of cryptography.fernet.Fernet
     fernet = None
 
-    ## TODO: scopes?
-
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     type = Column(Enum('session', 'token', 'refresh_token', name='token_type'), nullable=False)
     @declared_attr
     def user_id(cls):
         return Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    scopes = Column(ARRAY(String))
     expires_at = Column(DateTime, nullable=False, index=True)
     revoked_at = Column(DateTime, index=True)
     ip = Column(INET, nullable=False)
@@ -104,14 +116,9 @@ class TokenMixin(object):
 
     @classmethod
     def verify_token(cls, session, raw_input_token):
-        try:
-            input_token = re.compile('^[0-9a-f]{8}:').sub('', raw_input_token, count=1)
-            data = json.loads(cls.fernet.decrypt(input_token.encode('utf-8')).decode('utf-8'))
-            expires_at = dateutil.parser.parse(data['expires_at'])
-        except:
-            return None
+        data = verify_token_fernet(cls.fernet, raw_input_token)
 
-        if expires_at <= datetime.utcnow():
+        if data == None:
             return None
 
         token = session.query(cls) \
@@ -250,11 +257,23 @@ class SessionResource(Resource):
 
         return None, 204, {'Set-Cookie': cookie}
 
-## TODO: make this more abstract? allow for remote token and users? eg auth service client. maybe two classes
-## AuthStandalone
-## AuthServiceClient
+class BaseAuth(object):
+    def extract_token_str(self, request):
+        token_str = None
 
-class Auth(object):
+        authorization_header = request.headers.get('Authorization')
+        if authorization_header:
+            token_str = authorization_header.replace('Bearer ', '', 1)
+        elif self.cookie_name in request.cookies:
+            token_str = request.cookies[self.cookie_name]
+
+        return token_str
+
+    def init_app(self, app):
+        self.login_manager.init_app(app)
+        setattr(app, 'auth', self)
+
+class AuthStandalone(BaseAuth):
     def __init__(self,
                  app=None,
                  session=None,
@@ -315,20 +334,10 @@ class Auth(object):
 
             self.session_resource = LocalSessionResource
 
-    def init_app(self, app):
-        self.login_manager.init_app(app)
-        setattr(app, 'auth', self)
-
     def load_user_from_request(self, request):
-        token = None
+        token_str = self.extract_token_str(request)
 
-        authorization_header = request.headers.get('Authorization')
-        if authorization_header:
-            token = authorization_header.replace('Bearer ', '', 1)
-        elif self.cookie_name in request.cookies:
-            token = request.cookies[self.cookie_name]
-
-        token = self.token_model.verify_token(self.session, token)
+        token = self.token_model.verify_token(self.session, token_str)
 
         if token == None:
             return None
@@ -341,3 +350,49 @@ class Auth(object):
         setattr(user, 'token', token)
 
         return user
+
+class AuthServiceClient(BaseAuth):
+    def __init__(self,
+                 app=None,
+                 token_secret=None,
+                 csrf_header=None,
+                 csrf_secret=None,
+                 cookie_name='session',
+                 cookie_domain=None,
+                 cookie_path=None,
+                 secure_cookie=False,
+                 session_timeout=timedelta(hours=12),
+                 number_of_proxies=0):
+        self.cookie_name = cookie_name
+
+        self.login_manager = LoginManager()
+        self.login_manager.request_loader(self.load_user_from_request)
+
+        self.token_fernet = Fernet(token_secret)
+
+        if app:
+            self.init_app(app)
+
+        self.csrf = CSRF(csrf_secret=csrf_secret, csrf_header=csrf_header)
+
+    def load_user_from_request(self, request):
+        token_str = self.extract_token_str(request)
+
+        data = verify_token_fernet(self.token_fernet, token_str)
+
+        if data == None:
+            return None
+
+        try:
+            user, token = self.get_user_token(token_str)
+        except Exception as e:
+            if isinstance(e, NotImplementedError):
+                raise e
+            return None
+
+        setattr(user, 'token', token)
+
+        return user
+
+    def get_user_token(self, token_str):
+        raise NotImplementedError()
