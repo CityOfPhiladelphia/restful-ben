@@ -191,7 +191,6 @@ class AuthLogEntryMixin(object):
 
     @classmethod
     def build_indexes(cls):
-        ## TODO: use partial index based on timestamp and period?
         Index('idx_ip', cls.ip, postgresql_using='gist', postgresql_ops={'ip': 'inet_ops'})
 
 @listens_for(AuthLogEntryMixin, 'instrument_class', propagate=True)
