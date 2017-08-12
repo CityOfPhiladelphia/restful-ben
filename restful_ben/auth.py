@@ -167,7 +167,7 @@ class UserAuthMixin(object):
         return argon2.verify(input_password, self.hashed_password)
 
     def __init__(self, *args, **kwargs):
-        kwargs['username'] = kwargs['username'].lower()
+        kwargs['username'] = kwargs['username'].lower() ## force username to be case insensitive
         return super(UserAuthMixin, self).__init__(*args, **kwargs)
 
 class AuthLogEntryMixin(object):
