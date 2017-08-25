@@ -143,8 +143,12 @@ class TokenMixin(object):
         return None
 
 class UserAuthMixin(object):
-    username = Column(String, unique=True, nullable=False)
     hashed_password = Column(String)
+
+    ## To use a attribute / field other than usernam, like email
+    # @property
+    # def username(self):
+    #     return self.email
 
     @property
     def password(self):
@@ -165,10 +169,6 @@ class UserAuthMixin(object):
             return False
 
         return argon2.verify(input_password, self.hashed_password)
-
-    def __init__(self, *args, **kwargs):
-        kwargs['username'] = kwargs['username'].lower() ## force username to be case insensitive
-        return super(UserAuthMixin, self).__init__(*args, **kwargs)
 
 class AuthLogEntryMixin(object):
     __tablename__ = 'auth_log'

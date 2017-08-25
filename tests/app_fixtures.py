@@ -32,6 +32,7 @@ class User(UserAuthMixin, UserMixin, BaseModel):
 
     id = Column(Integer, primary_key=True)
     active = Column(Boolean, nullable=False)
+    username = Column(String, unique=True, nullable=False)
     email = Column(String)
     role = Column(Enum('normal','admin', name='user_roles'), nullable=False)
     created_at = Column(DateTime,
@@ -45,6 +46,10 @@ class User(UserAuthMixin, UserMixin, BaseModel):
     @property
     def is_active(self):
         return self.active
+
+    def __init__(self, *args, **kwargs):
+        kwargs['username'] = kwargs['username'].lower() ## force username to be case insensitive
+        return super(User, self).__init__(*args, **kwargs)
 
     def __repr__(self):
         return '<User id: {} active: {} username: {} email: {}>'.format(self.id, \
