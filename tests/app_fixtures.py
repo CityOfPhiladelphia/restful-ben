@@ -32,8 +32,7 @@ class User(UserAuthMixin, UserMixin, BaseModel):
 
     id = Column(Integer, primary_key=True)
     active = Column(Boolean, nullable=False)
-    username = Column(String, unique=True, nullable=False)
-    email = Column(String)
+    email = Column(String, unique=True, nullable=False)
     role = Column(Enum('normal','admin', name='user_roles'), nullable=False)
     created_at = Column(DateTime,
                         nullable=False,
@@ -48,13 +47,12 @@ class User(UserAuthMixin, UserMixin, BaseModel):
         return self.active
 
     def __init__(self, *args, **kwargs):
-        kwargs['username'] = kwargs['username'].lower() ## force username to be case insensitive
+        kwargs['email'] = kwargs['email'].lower() ## force email to be case insensitive
         return super(User, self).__init__(*args, **kwargs)
 
     def __repr__(self):
-        return '<User id: {} active: {} username: {} email: {}>'.format(self.id, \
+        return '<User id: {} active: {} email: {}>'.format(self.id, \
                                                                         self.active, \
-                                                                        self.username, \
                                                                         self.email)
 
 db = SQLAlchemy(metadata=metadata, model_class=BaseModel)
@@ -203,10 +201,10 @@ def app():
         db.create_all()
 
         ## seed users
-        db.session.add(User(active=True, username='amadonna', password='foo', role='admin'))
-        db.session.add(User(active=True, username='jdoe', password='icecream', role='normal'))
-        db.session.add(User(active=True, username='kclarkson', password='icecream', role='normal'))
-        db.session.add(User(active=True, username='whouston', password='icecream', role='admin'))
+        db.session.add(User(active=True, email='amadonna@example.com', password='foo', role='admin'))
+        db.session.add(User(active=True, email='jdoe@example.com', password='icecream', role='normal'))
+        db.session.add(User(active=True, email='kclarkson@example.com', password='icecream', role='normal'))
+        db.session.add(User(active=True, email='whouston@example.com', password='icecream', role='admin'))
         db.session.commit()
 
         ## seed cats
