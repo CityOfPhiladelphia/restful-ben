@@ -117,9 +117,7 @@ class QueryEngineMixin(object):
         'in_', # in
         'notin_', # not in
         'is_',
-        'isnot', # is not
-        'is_distinct_from', # a IS DISTINCT FROM b
-        'isnot_distinct_from', # a IS NOT DISTINCT FROM b
+        'isnot' # is not
     ]
 
     alias_operations = {
