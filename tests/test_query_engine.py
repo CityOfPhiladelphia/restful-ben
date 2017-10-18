@@ -128,3 +128,22 @@ def test_string_search_operators(app):
     assert response.json['total_pages'] == 1
     assert len(response.json['data']) == 1
     assert response.json['data'][0]['name'] == 'Ada'
+
+def test_in_operator(app):
+    test_client = app.test_client()
+    login(test_client)
+
+    response = json_call(test_client.get, '/cats?name__in=Ada&name__in=Leo')
+    assert response.status_code == 200
+    assert response.json['count'] == 2
+    assert response.json['page'] == 1
+    assert response.json['total_pages'] == 1
+    assert len(response.json['data']) == 2
+
+    response = json_call(test_client.get, '/cats?name__notin=Ada&name__notin=Leo')
+    assert response.status_code == 200
+    assert response.json['count'] == 1
+    assert response.json['page'] == 1
+    assert response.json['total_pages'] == 1
+    assert len(response.json['data']) == 1
+    assert response.json['data'][0]['name'] == 'Wilhelmina'
