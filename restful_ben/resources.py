@@ -109,15 +109,15 @@ class QueryEngineMixin(object):
         'ge', # >=
         'contains',
         'like',
-        'ilike',
-        'in_', # in ## TODO: add comma separation parsing
-        'notin_', # not in  ## TODO: add comma separation parsing
         'notlike', # not like
+        'ilike',
         'notilike', # not ilike
-        'is',
-        'isnot', # is not
         'startswith',
         'endswith',
+        'in_', # in ## TODO: add comma separation parsing ?
+        'notin_', # not in  ## TODO: add comma separation parsing ?
+        'is',
+        'isnot', # is not
         'is_distinct_from', # a IS DISTINCT FROM b
         'isnot_distinct_from', # a IS NOT DISTINCT FROM b
     ]
