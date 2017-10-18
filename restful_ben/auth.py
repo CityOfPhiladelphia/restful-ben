@@ -46,7 +46,7 @@ def csrf_check(func):
         if 'X-Requested-With' in request.headers:
             return func(*args, **kwargs)
 
-        abort(401)        
+        abort(401)
     return wrapper
 
 def verify_token_fernet(fernet, raw_input_token):
