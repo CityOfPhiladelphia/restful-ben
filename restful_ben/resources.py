@@ -114,8 +114,8 @@ class QueryEngineMixin(object):
         'notilike', # not ilike
         'startswith',
         'endswith',
-        'in_', # in ## TODO: add comma separation parsing ?
-        'notin_', # not in  ## TODO: add comma separation parsing ?
+        'in_', # in
+        'notin_', # not in
         'is',
         'isnot', # is not
         'is_distinct_from', # a IS DISTINCT FROM b
