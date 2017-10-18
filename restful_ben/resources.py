@@ -116,7 +116,7 @@ class QueryEngineMixin(object):
         'endswith',
         'in_', # in
         'notin_', # not in
-        'is',
+        'is_',
         'isnot', # is not
         'is_distinct_from', # a IS DISTINCT FROM b
         'isnot_distinct_from', # a IS NOT DISTINCT FROM b
@@ -126,7 +126,8 @@ class QueryEngineMixin(object):
         'lte': 'le',
         'gte': 'ge',
         'in': 'in_',
-        'notin': 'notin_'
+        'notin': 'notin_',
+        'is': 'is_'
     }
 
     @property
@@ -176,6 +177,16 @@ class QueryEngineMixin(object):
 
             if op == 'in_' or op == 'notin_':
                 value = request.args.getlist(key)
+                filters.append(getattr(field, op)(value))
+            elif op == 'is_' or op == 'isnot':
+                value = request.args.get(key)
+                value_lower = value.lower()
+                if value_lower == 'null' or value_lower == 'none':
+                    value = None
+                elif value_lower == 'true':
+                    value = True
+                elif value_lower == 'false':
+                    value = False
                 filters.append(getattr(field, op)(value))
             else:
                 value = request.args.get(key)

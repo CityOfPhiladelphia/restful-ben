@@ -147,3 +147,56 @@ def test_in_operator(app):
     assert response.json['total_pages'] == 1
     assert len(response.json['data']) == 1
     assert response.json['data'][0]['name'] == 'Wilhelmina'
+
+def test_is_operator(app):
+    test_client = app.test_client()
+    login(test_client)
+
+    ## setup
+
+    response = json_call(test_client.post, '/cats', {
+        'name': 'Dr. Kitty McMoewMoew',
+        'pattern': 'Tabby'
+    }, headers={'X-Requested-With': 'requests'})
+    assert response.status_code == 201
+
+    response = json_call(test_client.get, '/users/1')
+    assert response.status_code == 200
+    user = response.json
+    user['active'] = False
+    response = json_call(test_client.put, '/users/1', user, headers={'X-Requested-With': 'requests'})
+    assert response.status_code == 200
+
+    ## is null
+    response = json_call(test_client.get, '/cats?age__is=null')
+    assert response.status_code == 200
+    assert response.json['count'] == 1
+    assert response.json['page'] == 1
+    assert response.json['total_pages'] == 1
+    assert len(response.json['data']) == 1
+    assert response.json['data'][0]['name'] == 'Dr. Kitty McMoewMoew'
+
+    ## isnot null
+    response = json_call(test_client.get, '/cats?age__isnot=null')
+    assert response.status_code == 200
+    assert response.json['count'] == 3
+    assert response.json['page'] == 1
+    assert response.json['total_pages'] == 1
+    assert len(response.json['data']) == 3
+
+    ## is true
+    response = json_call(test_client.get, '/users?active__is=true')
+    assert response.status_code == 200
+    assert response.json['count'] == 3
+    assert response.json['page'] == 1
+    assert response.json['total_pages'] == 1
+    assert len(response.json['data']) == 3
+
+    ## is false
+    response = json_call(test_client.get, '/users?active__is=false')
+    assert response.status_code == 200
+    assert response.json['count'] == 1
+    assert response.json['page'] == 1
+    assert response.json['total_pages'] == 1
+    assert len(response.json['data']) == 1
+    assert response.json['data'][0]['email'] == 'amadonna@example.com'
