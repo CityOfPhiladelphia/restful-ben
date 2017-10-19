@@ -3,8 +3,20 @@ import math
 from flask import request
 from flask_restful import Resource, abort
 from sqlalchemy.sql import func
+from sqlalchemy.orm import subqueryload
 from sqlalchemy.inspection import inspect
 from sqlalchemy.dialects.postgresql import JSONB
+from marshmallow import fields
+
+class ExpandableNested(fields.Nested):
+    def __init__(self, *args, foreign_key=None, **kwargs):
+        self.foreign_key = foreign_key
+        return super(ExpandableNested, self).__init__(*args, **kwargs)
+
+    def serialize(self, attr, obj, accessor=None):
+        if attr not in obj.__dict__:
+            return getattr(obj, self.foreign_key or (attr + '_id'))
+        return super(ExpandableNested, self).serialize(attr, obj, accessor)
 
 class BaseResource(Resource):
     def dispatch(self, *args, **kwargs):
@@ -98,6 +110,8 @@ class QueryEngineMixin(object):
     field_selection_key = '$fields'
     order_by_key = '$order_by'
 
+    expand_key = '$expand'
+
     query_engine_exclude_fields = []
 
     allowed_operations = [
@@ -134,7 +148,8 @@ class QueryEngineMixin(object):
             self.page_key,
             self.page_size_key,
             self.field_selection_key,
-            self.order_by_key
+            self.order_by_key,
+            self.expand_key
         ]
 
     def get_filters(self):
@@ -207,7 +222,7 @@ class QueryEngineMixin(object):
                 page = int(raw_page)
                 assert(page > 0)
             except:
-                abort(400, errors=['`{}` is not a postive integer'.format(self.page_key)])
+                abort(400, errors=['`{}` is not a positive integer'.format(self.page_key)])
 
         if raw_page_size is None:
             page_size = self.default_page_size
@@ -267,16 +282,37 @@ class QueryEngineMixin(object):
             fields.append(getattr(self.model, raw_field))
         return fields
 
+    def get_expansions(self):
+        raw_expansion = request.args.get(self.expand_key)
+
+        if raw_expansion is None:
+            return []
+
+        expansions = []
+        for raw_expand in raw_expansion.split(','):
+            if not hasattr(self.model, raw_expand):
+                abort(400, errors=['`{}` does not exist on {}'.format(raw_field, self.model.__name__)])
+            expansions.append(getattr(self.model, raw_expand))
+
+        return [subqueryload(*expansions)]
+
     def generate_query(self, offset, limit):
         fields = self.get_field_selection()
         filters = self.get_filters()
         ordering = self.get_ordering()
+        expansions = self.get_expansions()
 
-        return self.session.query(*fields)\
-        .filter(*filters)\
-        .order_by(*ordering)\
-        .offset(offset)\
-        .limit(limit)
+        query = (
+            self.session
+            .query(*fields)
+            .filter(*filters)
+            .order_by(*ordering)
+            .options(*expansions)
+            .offset(offset)
+            .limit(limit)
+        )
+
+        return query
 
     def get_query_count(self, query):
         count_q = query.statement.with_only_columns([func.count()])\

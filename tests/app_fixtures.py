@@ -9,7 +9,19 @@ from marshmallow_sqlalchemy import ModelSchema, field_for
 from marshmallow import fields
 from flask_restful import Api
 from flask_login import UserMixin, login_required, current_user
-from sqlalchemy import Column, String, Enum, Integer, DateTime, Boolean, func, MetaData, create_engine
+from sqlalchemy import (
+    Column,
+    String,
+    Enum,
+    Integer,
+    DateTime,
+    Boolean,
+    ForeignKey,
+    func,
+    MetaData,
+    create_engine
+)
+from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from cryptography.fernet import Fernet
 
@@ -119,6 +131,8 @@ class Cat(BaseModel):
     name = Column(String, nullable=False)
     pattern = Column(String)
     age = Column(Integer)
+    owner_id = Column(Integer, ForeignKey('users.id'))
+    owner = relationship('User')
     created_at = Column(DateTime,
                         nullable=False,
                         server_default=func.now())
@@ -133,11 +147,22 @@ class Cat(BaseModel):
                                                                 self.pattern, \
                                                                 self.age)
 
+class ExpandableNested(fields.Nested):
+    def __init__(self, *args, foreign_key=None, **kwargs):
+        self.foreign_key = foreign_key
+        return super(ExpandableNested, self).__init__(*args, **kwargs)
+
+    def serialize(self, attr, obj, accessor=None):
+        if attr not in obj.__dict__:
+            return getattr(obj, self.foreign_key or (attr + '_id'))
+        return super(ExpandableNested, self).serialize(attr, obj, accessor)
+
 class CatSchema(ModelSchema):
     class Meta:
         model = Cat
 
     id = field_for(Cat, 'id', dump_only=True)
+    owner = ExpandableNested(UserSchema, foreign_key='owner_id')
     created_at = field_for(Cat, 'created_at', dump_only=True)
     updated_at = field_for(Cat, 'updated_at', dump_only=True)
 
@@ -206,9 +231,9 @@ def app():
         db.session.commit()
 
         ## seed cats
-        db.session.add(Cat(name='Ada', pattern='Tabby', age=5))
-        db.session.add(Cat(name='Leo', pattern='Tabby', age=2))
-        db.session.add(Cat(name='Wilhelmina', pattern='Calico', age=4))
+        db.session.add(Cat(name='Ada', pattern='Tabby', age=5, owner_id=1))
+        db.session.add(Cat(name='Leo', pattern='Tabby', age=2, owner_id=2))
+        db.session.add(Cat(name='Wilhelmina', pattern='Calico', age=4, owner_id=3))
         db.session.commit()
 
         api.add_resource(UserListResource, '/users')
